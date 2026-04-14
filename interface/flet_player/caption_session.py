@@ -89,6 +89,16 @@ class CaptionSession:
             return str(self.caption_text[res].get("text", ""))
         return ""
 
+    def caption_progress_text(self) -> str:
+        if not self.caption_text:
+            return ""
+        total = len(self.caption_text)
+        if total <= 0:
+            return ""
+        idx = self.caption_idx if self.caption_idx >= 0 else 0
+        idx = min(max(idx, 0), total - 1)
+        return f"{idx + 1}/{total}"
+
     def toggle_practice_mode(self) -> None:
         self.practice_mode = not self.practice_mode
 

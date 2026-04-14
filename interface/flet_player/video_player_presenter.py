@@ -23,9 +23,11 @@ class PlayerViewHooks:
     set_caption_display: Callable[[str], None]
     set_caption_input: Callable[[str], None]
     set_caption_input_enabled: Callable[[bool], None]
+    set_slider_enabled: Callable[[bool], None]
     set_playing: Callable[[bool], None]
     show_error: Callable[[str], None]
     show_info: Callable[[str], None]
+    set_transcribe_busy: Callable[[bool, str], None]
     confirm_finish_practice: Callable[[], Awaitable[bool]]
     on_language_font: Callable[[Optional[str]], None]
     request_exit_app: Callable[[], None]
@@ -37,18 +39,25 @@ class VideoPlayerPresenter:
         self.session = session
         self.hooks = hooks
         self.media_source: Optional[str] = None
-        self._volume = 80.0
         self.whisper_model_name = os.environ.get("WHISPER_MODEL", "base")
         self.whisper_device: Optional[str] = os.environ.get("WHISPER_DEVICE")
 
     def bind_tick(self) -> None:
         self.backend.set_on_tick(self._on_tick)
 
+    def _caption_or_progress(self, position_ms: int) -> str:
+        cap = self.session.caption_display_text(position_ms)
+        if cap:
+            return cap
+        if self.session.caption_text is not None and not self.session.caption_show:
+            return self.session.caption_progress_text()
+        return ""
+
     async def _on_tick(self, pos_us: int, dur_us: int) -> None:
         pos_ms = pos_us // 1000
         if self.session.practice_should_pause(pos_ms):
             await self.backend.pause()
-        cap = self.session.caption_display_text(pos_ms)
+        cap = self._caption_or_progress(pos_ms)
         self.hooks.set_caption_display(cap)
         self.hooks.set_times(format_hms_from_us(pos_us), format_hms_from_us(dur_us))
         if not self.backend.scrubbing and dur_us > 0:
@@ -68,8 +77,32 @@ class VideoPlayerPresenter:
     async def load_local_path(self, path: str, load_sidecar_caption: bool = True) -> None:
         p = Path(path)
         self.media_source = str(p.resolve())
-        uri = p.resolve().as_uri()
-        await self.backend.set_playlist_uri(uri, autoplay=True)
+        candidates: list[str] = []
+        # 1) Absolute local path (works for many backends).
+        candidates.append(self.media_source)
+        # 2) file:// URI fallback.
+        candidates.append(p.resolve().as_uri())
+        # 3) Relative path fallback for Windows absolute-path parser edge-cases.
+        try:
+            candidates.append(str(p.resolve().relative_to(Path.cwd())))
+        except Exception:
+            pass
+
+        last_error: Optional[Exception] = None
+        for uri in dict.fromkeys(candidates):
+            try:
+                await self.backend.set_playlist_uri(uri, autoplay=True)
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+
+        if last_error is not None:
+            raise RuntimeError(
+                "Failed to open local video. Tried path/file URI variants.\n"
+                f"Path: {self.media_source}\n"
+                f"Error: {last_error}"
+            )
         self.hooks.set_times("00:00:00", format_hms_from_us(self.backend.duration_us))
         if load_sidecar_caption:
             cap_path = p.parent / (p.stem + ".caption")
@@ -94,6 +127,7 @@ class VideoPlayerPresenter:
         self.hooks.on_language_font(self.session.caption_language())
         if self.session.caption_answer is not None and self.session.caption_idx >= 0:
             self.hooks.set_caption_input(self.session.caption_answer[self.session.caption_idx])
+        self.hooks.set_caption_display(self._caption_or_progress(0))
 
     async def replay_caption(self) -> None:
         ms = self.session.replay_start_ms()
@@ -126,17 +160,14 @@ class VideoPlayerPresenter:
     def toggle_practice_mode(self) -> None:
         self.session.toggle_practice_mode()
         self.hooks.set_caption_input_enabled(self.session.practice_mode)
+        self.hooks.set_slider_enabled(not self.session.practice_mode)
         if not self.session.practice_mode:
             self.hooks.set_caption_display("")
 
     def toggle_show_caption(self) -> None:
         self.session.toggle_caption_show()
         if not self.session.caption_show:
-            self.hooks.set_caption_display("")
-
-    async def volume_delta(self, delta: float) -> None:
-        self._volume = max(0.0, min(100.0, self._volume + delta))
-        await self.backend.set_volume(self._volume)
+            self.hooks.set_caption_display(self.session.caption_progress_text())
 
     async def seek_delta_ms(self, delta_ms: int) -> None:
         pos = await self.backend.get_position_us()
@@ -146,6 +177,7 @@ class VideoPlayerPresenter:
         if not self.media_source:
             self.hooks.show_error("No local media loaded for transcription.")
             return
+        self.hooks.set_transcribe_busy(True, f"Transcribing with Whisper ({self.whisper_model_name})...")
         await self.backend.pause()
         try:
             segments, cap_path = await asyncio.to_thread(
@@ -155,9 +187,11 @@ class VideoPlayerPresenter:
                 self.whisper_device,
             )
         except Exception as e:
+            self.hooks.set_transcribe_busy(False, "")
             self.hooks.show_error(str(e))
             return
         self.session.load_caption_data(segments)
         self.hooks.on_language_font(self.session.caption_language())
         self.hooks.set_caption_input(self.session.caption_answer[0] if self.session.caption_answer else "")
+        self.hooks.set_transcribe_busy(False, "")
         self.hooks.show_info(f"Transcription saved: {cap_path}")

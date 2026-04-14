@@ -13,9 +13,6 @@ from .caption_session import CaptionSession
 from .flet_video_backend import FletVideoBackend
 from .video_player_presenter import PlayerViewHooks, VideoPlayerPresenter
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_VIDEO = _REPO_ROOT / "assets" / "Don't click this! Unless you want to cry all over again.mp4"
-
 _VIDEO_FILETYPES = [
     (
         "Media",
@@ -25,6 +22,8 @@ _VIDEO_FILETYPES = [
     ("All files", "*.*"),
 ]
 _CAPTION_FILETYPES = [("Caption", "*.caption"), ("All files", "*.*")]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_VIDEO = _REPO_ROOT / "assets" / "Don't click this! Unless you want to cry all over again.mp4"
 
 
 def _native_open_filename(title: str, filetypes: list[tuple[str, str]]) -> Optional[str]:
@@ -126,19 +125,19 @@ def build_video_player_page(
         tooltip="Play / Pause",
     )
 
-    if initial_video_uri:
-        start_uri = initial_video_uri
-    elif _DEFAULT_VIDEO.is_file():
-        start_uri = _DEFAULT_VIDEO.resolve().as_uri()
-    else:
-        start_uri = (
-            "https://user-images.githubusercontent.com/28951144/"
-            "229373720-14d69157-1a56-4a78-a2f4-d7a134d7c3e9.mp4"
-        )
-
     video = ftv.Video(
         expand=True,
-        playlist=[ftv.VideoMedia(start_uri)],
+        playlist=[
+            ftv.VideoMedia(
+                initial_video_uri
+                if initial_video_uri
+                else (
+                    str(_DEFAULT_VIDEO.resolve())
+                    if _DEFAULT_VIDEO.is_file()
+                    else "https://user-images.githubusercontent.com/28951144/229373720-14d69157-1a56-4a78-a2f4-d7a134d7c3e9.mp4"
+                )
+            )
+        ],
         playlist_mode=ftv.PlaylistMode.LOOP,
         fill_color=ft.Colors.BLACK,
         aspect_ratio=16 / 9,
@@ -161,9 +160,22 @@ def build_video_player_page(
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
 
+    transcribe_loading = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Transcribing"),
+        content=ft.Row(
+            [
+                ft.ProgressRing(),
+                ft.Text("Loading, please wait..."),
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
     root = ft.Container(
         expand=True,
-        padding=ft.padding.only(bottom=250),
+        padding=0,
         content=ft.Column(
             [
                 video,
@@ -240,8 +252,19 @@ def build_video_player_page(
     def set_caption_input_enabled(en: bool) -> None:
         caption_input.disabled = not en
 
+    def set_slider_enabled(en: bool) -> None:
+        position_slider.disabled = not en
+
     def set_playing(playing: bool) -> None:
         play_btn.icon = ft.Icons.PAUSE if playing else ft.Icons.PLAY_ARROW
+
+    def set_transcribe_busy(busy: bool, message: str) -> None:
+        if message:
+            transcribe_loading.title = ft.Text(message)
+        if transcribe_loading not in page.overlay:
+            page.overlay.append(transcribe_loading)
+        transcribe_loading.open = busy
+        page.update()
 
     hooks = PlayerViewHooks(
         set_times=set_times,
@@ -249,9 +272,11 @@ def build_video_player_page(
         set_caption_display=set_caption_display,
         set_caption_input=set_caption_input,
         set_caption_input_enabled=set_caption_input_enabled,
+        set_slider_enabled=set_slider_enabled,
         set_playing=set_playing,
         show_error=lambda m: _snack(page, m, ft.Colors.RED_700),
         show_info=lambda m: _snack(page, m, ft.Colors.BLUE_GREY_700),
+        set_transcribe_busy=set_transcribe_busy,
         confirm_finish_practice=confirm_finish_practice,
         on_language_font=on_language_font,
         request_exit_app=lambda: page.run_task(request_exit_app_async),
@@ -279,9 +304,13 @@ def build_video_player_page(
     play_btn.on_click = _toggle_play
 
     def _on_slider_change_start(_: ft.ControlEvent) -> None:
+        if presenter.session.practice_mode:
+            return
         backend.set_scrubbing(True)
 
     def _on_slider_commit(e: ft.ControlEvent) -> None:
+        if presenter.session.practice_mode:
+            return
         ratio = float(e.control.value)
 
         async def _seek() -> None:
@@ -320,7 +349,7 @@ def build_video_player_page(
 
     myinfo = (
         "Flet player (QT6 port)\n\n"
-        "UP/DOWN: volume\n"
+        "UP/DOWN: switch lines in practice mode\n"
         "LEFT/RIGHT: seek ±1 min (Shift: ±10 min)\n"
         "S: toggle control bar\n"
         "F: fullscreen\n"
@@ -369,7 +398,10 @@ def build_video_player_page(
             _snack(page, "tkinter is not available for file browse.", ft.Colors.RED_700)
             return
         if p:
-            await presenter.load_local_path(p, True)
+            try:
+                await presenter.load_local_path(p, True)
+            except Exception as ex:
+                hooks.show_error(str(ex))
 
     async def _pick_open_caption() -> None:
         try:
@@ -424,6 +456,9 @@ def build_video_player_page(
         if e.alt or e.ctrl or e.meta:
             return
         k = e.key
+        if caption_focused["v"] and k not in ("Arrow Up", "Up", "Arrow Down", "Down", "Enter", "Numpad Enter"):
+            # Prevent global/menu hotkeys from firing while typing caption text.
+            return
         if k in ("S", "s"):
             toggle_controls_visible()
         elif k in ("F", "f"):
@@ -431,16 +466,12 @@ def build_video_player_page(
         elif k in ("I", "i"):
             show_info_dialog()
         elif k in ("Arrow Up", "Up"):
-            if caption_focused["v"]:
+            if presenter.session.practice_mode:
                 await presenter.last_caption()
-            else:
-                await presenter.volume_delta(5.0)
             page.update()
         elif k in ("Arrow Down", "Down"):
-            if caption_focused["v"]:
+            if presenter.session.practice_mode:
                 await presenter.next_caption(True, caption_input.value or "")
-            else:
-                await presenter.volume_delta(-5.0)
             page.update()
         elif k in ("Arrow Left", "Left"):
             ms = 600000 if e.shift else 60000

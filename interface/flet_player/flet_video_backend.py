@@ -97,16 +97,21 @@ class FletVideoBackend(PlaybackPort):
         self.duration_us = max(0, dur.in_microseconds)
         return self.duration_us
 
-    async def set_volume(self, level_0_100: float) -> None:
-        self._video.volume = max(0.0, min(100.0, float(level_0_100)))
-        self._page.update()
-
     async def set_playlist_uri(self, uri: str, autoplay: bool = True) -> None:
         self._video.playlist = [ftv.VideoMedia(uri)]
-        self._video.autoplay = autoplay
+        self._video.autoplay = False
         self.duration_us = 0
         self._page.update()
+        try:
+            await self._video.jump_to(0)
+        except Exception:
+            # Some backends can start from first item without explicit jump.
+            pass
+        if autoplay:
+            await self._video.play()
         await self._wait_for_duration()
+        if self.duration_us <= 0:
+            raise RuntimeError(f"Video load timeout or unsupported resource: {uri}")
 
     def set_scrubbing(self, v: bool) -> None:
         self.scrubbing = v
