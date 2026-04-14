@@ -1,5 +1,8 @@
 # debugging & third-partly components & testing
 third-partly-comps/
+documents/
+.txt
+.pkl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

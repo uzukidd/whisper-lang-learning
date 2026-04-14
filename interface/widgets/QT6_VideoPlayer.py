@@ -13,6 +13,7 @@ import subprocess
 import pickle as pkl
 import whisper
 import os
+from sortedcontainers import SortedDict
 #QT_DEBUG_PLUGINS
 
 class CustomDialog(QDialog):
@@ -32,9 +33,6 @@ class CustomDialog(QDialog):
         self.layout.addWidget(message)
         self.layout.addWidget(self.buttonBox)
         self.setLayout(self.layout)
-        
-        
-
 
 class VideoPlayer(QWidget):
 
@@ -96,6 +94,7 @@ class VideoPlayer(QWidget):
         self.caption_input.setTextMargins(10, 10, 10, 10)
         self.caption_input.setFont(QFont('BIZ UDMincho', 15))
         
+        self.caption_time = SortedDict()
         self.caption_text = None
         self.caption_answer = None
         self.caption_idx = -1
@@ -123,7 +122,7 @@ class VideoPlayer(QWidget):
         inputLayout.addWidget(self.caption)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 250)
         layout.addWidget(self.videoWidget)
         layout.addLayout(inputLayout)
         layout.addLayout(controlLayout)
@@ -214,15 +213,30 @@ class VideoPlayer(QWidget):
     def openCaption(self, fileName = None):
         if fileName is None:
             fileName, _ = QFileDialog.getOpenFileName(self, "Open Caption",
-                QDir.homePath() + "/Videos", "pickle (*.pkl)")
+                QDir.homePath() + "/Videos", "caption (*.caption)")
 
         if fileName != '':
+            self.caption_time.clear()
             self.caption_text = pkl.load(open(fileName, "rb"))
             self.caption_answer = [""] * len(self.caption_text)
             self.caption_idx = 0
             self.setPosition(0)
+            if self.caption_text is not None and len(self.caption_text) > 0:
+                if "language" in self.caption_text[0]:
+                    if self.caption_text[0]["language"] == "ja":
+                        self.caption.setFont(QFont('BIZ UDMincho', 15))
+                        self.caption_input.setFont(QFont('BIZ UDMincho', 15))
+                    elif self.caption_text[0]["language"] == "en":
+                        self.caption.setFont(QFont('times new roman', 16))
+                        self.caption_input.setFont(QFont('times new roman', 16))
+                for seg in self.caption_text:
+                    start_time = int(seg["start"] * 1000)
+                    end_time = int(seg["end"] * 1000)
+                    self.caption_time[start_time] = end_time
+
             print(f"Caption loaded: {fileName}")
         else:
+            self.caption_time.clear()
             self.caption_text = None
             self.caption_answer = None
             self.caption_idx = -1
@@ -236,7 +250,6 @@ class VideoPlayer(QWidget):
             self.mediaPlayer.play()
     
     def mediaStateChanged(self, state):
-        print("mediaStateChanged")
         if self.mediaPlayer.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.playButton.setIcon(self.style().standardIcon(self.playIcon))
         else:
@@ -247,7 +260,18 @@ class VideoPlayer(QWidget):
             self.caption_answer[self.caption_idx] = self.caption_input.text()
 
     def positionChanged(self, position):
-        # print("positionChanged")
+        def find_time_interval(container:SortedDict, time_intervals):
+            pos = container.bisect_left(time_intervals)
+            
+            if pos != len(container):
+                elements = container.peekitem(pos)
+                if elements[0] <= time_intervals and time_intervals <= elements[1]:
+                    return pos
+            if pos != 0:
+                elements = container.peekitem(pos - 1)
+                if elements[0] <= time_intervals and time_intervals <= elements[1]:
+                    return pos
+            return None
         self.positionSlider.setValue(position)
 
         mtime = QTime(0,0,0,0)
@@ -257,19 +281,23 @@ class VideoPlayer(QWidget):
         if self.caption_text is not None:
             seg = self.caption_text[self.caption_idx]
             if self.practice_mode:
-                if seg["end"] * 1000 <= position:
+                end_time = seg["end"] * 1000
+                if end_time < position:
                     self.mediaPlayer.pause()
                 
             if self.caption_show:
-                for seg in self.caption_text:
-                    if seg["start"] * 1000 <= position and seg["end"] * 1000 >= position:
-                        self.caption.setText(seg["text"])
-                        break
+                if self.practice_mode:
+                    self.caption.setText(seg["text"])
+                else:
+                    res = find_time_interval(self.caption_time, position)
+                    if res is not None:
+                        self.caption.setText(self.caption_text[res - 1]["text"])
             
     def replay_caption(self):
         if self.caption_text is not None:
-            seg = int(self.caption_text[self.caption_idx]["start"] * 1000)
-            self.setPosition(seg)
+            start_time = int(self.caption_text[self.caption_idx]["start"] * 1000)
+            start_time = 0 if start_time < 0 else start_time
+            self.setPosition(start_time)
             self.mediaPlayer.play()
             
             
@@ -277,26 +305,20 @@ class VideoPlayer(QWidget):
         if self.caption_text is not None:
             if self.caption_idx > 0:
                 self.caption_idx = self.caption_idx - 1
-                seg = int(self.caption_text[self.caption_idx]["start"] * 1000)
-                self.setPosition(seg)
-                self.mediaPlayer.play()
             self.caption_input.setText(self.caption_answer[self.caption_idx])
+            self.replay_caption()
                 
             
     def nextCaption(self, next_flag = False):
         if self.caption_text is not None:
             if not next_flag and not self.caption_input.text():
-                seg = int(self.caption_text[self.caption_idx]["start"] * 1000)
-                self.setPosition(seg)
-                self.mediaPlayer.play()
                 self.caption_input.setText(self.caption_answer[self.caption_idx])
+                self.replay_caption()
 
             elif self.caption_idx < len(self.caption_text) - 1:
                 self.caption_idx = self.caption_idx + 1
-                seg = int(self.caption_text[self.caption_idx]["start"] * 1000)
-                self.setPosition(seg)
-                self.mediaPlayer.play()
                 self.caption_input.setText(self.caption_answer[self.caption_idx])
+                self.replay_caption()
                 
             else:
                 dlg = CustomDialog()
@@ -321,9 +343,9 @@ class VideoPlayer(QWidget):
         if self.media_source is None:
             return
         
-        
         self.mediaPlayer.pause()
         msgBox = QMessageBox(self)
+        # msgBox.setWindowFlags(Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint)     
         msgBox.setText("Please wait...")
         
         wps = whisper_process_thread(self)
@@ -334,8 +356,6 @@ class VideoPlayer(QWidget):
             
        
             
-        
-            
     def show_caption(self):
         self.caption_show = not self.caption_show
         if not self.caption_show:
@@ -344,8 +364,9 @@ class VideoPlayer(QWidget):
             
     def result_publish(self):
         result_log = ""
-        for text, ans in zip(self.caption_text, self.caption_answer):
+        for idx, (text, ans) in enumerate(zip(self.caption_text, self.caption_answer)):
             text = text["text"]
+            result_log += f"idx:{idx}\n"
             result_log += f"text:{text}\n"
             result_log += f"your answer:{ans}\n"
             result_log += "\n"
@@ -409,7 +430,7 @@ class VideoPlayer(QWidget):
         
         
         actionFile.triggered.connect(self.openFile)
-        actionCaption.triggered.connect(self.openCaption)
+        actionCaption.triggered.connect(lambda: self.openCaption())
         actionTranscript.triggered.connect(self.videoTranscript)
         actionPractice.triggered.connect(self.switch_practice_mode)
         actionShowCaption.triggered.connect(self.show_caption)
@@ -601,7 +622,7 @@ class whisper_process_thread(QThread):
     def run(self):
         if self.context.whisper_model is None:
             self.context.whisper_model = whisper.load_model("medium").cuda()
-        result = self.context.whisper_model.transcribe(self.context.media_source)
+        result = self.context.whisper_model.transcribe(self.context.media_source, verbose=True)
         output_text_pkl = []
         for seg in result["segments"]:
             output_text_pkl.append({
@@ -609,6 +630,7 @@ class whisper_process_thread(QThread):
                 "start": seg["start"], 
                 "end": seg["end"], 
                 "text": seg["text"], 
+                "language": result["language"]
             })
         save_path, _ = os.path.splitext(self.context.media_source)
         pkl.dump(output_text_pkl, open(save_path + ".caption", "wb+"))
@@ -691,5 +713,5 @@ if __name__ == '__main__':
             player.playFromURL()
         else:
             player.loadFilm(sys.argv[1])
-            player.showSlider()
+            player.toggleSlider()
 sys.exit(app.exec())
