@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+PracticeType = Literal["full_text", "sentence_by_sentence"]
 
 
 def _find_time_interval_index(starts: list[int], ends: list[int], time_ms: int) -> Optional[int]:
@@ -31,6 +33,7 @@ class CaptionSession:
     caption_answer: Optional[list[str]] = None
     caption_idx: int = -1
     practice_mode: bool = False
+    practice_type: PracticeType = "full_text"
     caption_show: bool = False
 
     def clear_captions(self) -> None:
@@ -65,6 +68,11 @@ class CaptionSession:
             return None
         start_time = int(self.caption_text[self.caption_idx]["start"] * 1000)
         return max(0, start_time)
+
+    def current_caption_text(self) -> str:
+        if self.caption_text is None or not (0 <= self.caption_idx < len(self.caption_text)):
+            return ""
+        return str(self.caption_text[self.caption_idx].get("text", ""))
 
     def practice_should_pause(self, position_ms: int) -> bool:
         if not self.practice_mode or self.caption_text is None:
@@ -101,6 +109,13 @@ class CaptionSession:
 
     def toggle_practice_mode(self) -> None:
         self.practice_mode = not self.practice_mode
+
+    def set_practice_mode(self, enabled: bool, mode_type: PracticeType = "full_text") -> None:
+        self.practice_mode = bool(enabled)
+        self.practice_type = mode_type
+
+    def is_sentence_practice_mode(self) -> bool:
+        return self.practice_mode and self.practice_type == "sentence_by_sentence"
 
     def toggle_caption_show(self) -> None:
         self.caption_show = not self.caption_show

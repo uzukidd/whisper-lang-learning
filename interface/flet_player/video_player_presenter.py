@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from .caption_io import load_caption_pickle, save_result_log
-from .caption_session import CaptionSession
+from .caption_session import CaptionSession, PracticeType
 from .flet_video_backend import FletVideoBackend
 from .time_format import format_hms_from_us
 from .whisper_service import transcribe_media_to_caption_segments
@@ -22,8 +23,11 @@ class PlayerViewHooks:
     set_slider_ratio: Callable[[float], None]
     set_caption_display: Callable[[str], None]
     set_caption_input: Callable[[str], None]
+    focus_caption_input: Callable[[], None]
+    set_sentence_feedback: Callable[[list[tuple[str, bool]], bool], None]
     set_caption_input_enabled: Callable[[bool], None]
     set_slider_enabled: Callable[[bool], None]
+    set_practice_mode_text: Callable[[str], None]
     set_playing: Callable[[bool], None]
     show_error: Callable[[str], None]
     show_info: Callable[[str], None]
@@ -41,6 +45,7 @@ class VideoPlayerPresenter:
         self.media_source: Optional[str] = None
         self.whisper_model_name = os.environ.get("WHISPER_MODEL", "base")
         self.whisper_device: Optional[str] = os.environ.get("WHISPER_DEVICE")
+        self._submit_locked = False
 
     def bind_tick(self) -> None:
         self.backend.set_on_tick(self._on_tick)
@@ -52,6 +57,24 @@ class VideoPlayerPresenter:
         if self.session.caption_text is not None and not self.session.caption_show:
             return self.session.caption_progress_text()
         return ""
+
+    @staticmethod
+    def _normalize_token(token: str) -> str:
+        punct = string.punctuation + "“”‘’，。！？；：、…"
+        return token.strip().strip(punct).lower()
+
+    def _compare_sentence_words(self, user_input: str, expected_caption: str) -> tuple[list[tuple[str, bool]], bool]:
+        user_tokens = [t for t in user_input.split() if t]
+        expected_tokens = [t for t in expected_caption.split() if t]
+        word_marks: list[tuple[str, bool]] = []
+        all_ok = len(user_tokens) == len(expected_tokens)
+        for i, expected in enumerate(expected_tokens):
+            user_word = user_tokens[i] if i < len(user_tokens) else ""
+            ok = bool(user_word) and self._normalize_token(user_word) == self._normalize_token(expected)
+            word_marks.append((expected, ok))
+            if not ok:
+                all_ok = False
+        return word_marks, all_ok
 
     async def _on_tick(self, pos_us: int, dur_us: int) -> None:
         pos_ms = pos_us // 1000
@@ -71,8 +94,41 @@ class VideoPlayerPresenter:
     async def seek_slider_ratio(self, ratio: float) -> None:
         await self.backend.seek_slider_ratio(ratio)
 
+    def is_submit_locked(self) -> bool:
+        return self._submit_locked
+
     def on_caption_input_changed(self, text: str) -> None:
         self.session.save_input_to_answer(text)
+
+    async def submit_caption(self, current_input: str) -> None:
+        if self._submit_locked:
+            return
+        if self.session.is_sentence_practice_mode():
+            await self._submit_sentence_practice(current_input)
+            return
+        await self.next_caption(False, current_input)
+
+    async def _submit_sentence_practice(self, current_input: str) -> None:
+        if self.session.caption_text is None:
+            return
+        self._submit_locked = True
+        self.hooks.focus_caption_input()
+        self.session.save_input_to_answer(current_input)
+        expected = self.session.current_caption_text()
+        word_marks, is_match = self._compare_sentence_words(current_input, expected)
+        self.hooks.set_sentence_feedback(word_marks, True)
+        try:
+            await asyncio.sleep(1.0)
+            if is_match:
+                await self.next_caption(True, current_input)
+            else:
+                self.hooks.set_caption_input("")
+                self.session.save_input_to_answer("")
+                await self.replay_caption()
+            self.hooks.set_sentence_feedback([], False)
+            self.hooks.focus_caption_input()
+        finally:
+            self._submit_locked = False
 
     async def load_local_path(self, path: str, load_sidecar_caption: bool = True) -> None:
         p = Path(path)
@@ -158,11 +214,28 @@ class VideoPlayerPresenter:
                 self.hooks.request_exit_app()
 
     def toggle_practice_mode(self) -> None:
-        self.session.toggle_practice_mode()
-        self.hooks.set_caption_input_enabled(self.session.practice_mode)
-        self.hooks.set_slider_enabled(not self.session.practice_mode)
-        if not self.session.practice_mode:
-            self.hooks.set_caption_display("")
+        if self.session.practice_mode:
+            self.disable_practice_mode()
+        else:
+            self.set_practice_mode("full_text")
+
+    def set_practice_mode(self, mode_type: PracticeType) -> None:
+        self.session.set_practice_mode(True, mode_type)
+        self.hooks.set_practice_mode_text(
+            "Practice: Full-text" if mode_type == "full_text" else "Practice: Sentence-by-sentence"
+        )
+        self.hooks.set_caption_input_enabled(True)
+        self.hooks.set_slider_enabled(False)
+        if mode_type != "sentence_by_sentence":
+            self.hooks.set_sentence_feedback([], False)
+
+    def disable_practice_mode(self) -> None:
+        self.session.set_practice_mode(False, self.session.practice_type)
+        self.hooks.set_practice_mode_text("Practice: OFF")
+        self.hooks.set_caption_input_enabled(False)
+        self.hooks.set_slider_enabled(True)
+        self.hooks.set_caption_display("")
+        self.hooks.set_sentence_feedback([], False)
 
     def toggle_show_caption(self) -> None:
         self.session.toggle_caption_show()

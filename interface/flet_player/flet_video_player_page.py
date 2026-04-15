@@ -23,7 +23,20 @@ _VIDEO_FILETYPES = [
 ]
 _CAPTION_FILETYPES = [("Caption", "*.caption"), ("All files", "*.*")]
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_VIDEO = _REPO_ROOT / "assets" / "Don't click this! Unless you want to cry all over again.mp4"
+
+
+def _default_video_path() -> Optional[Path]:
+    assets = _REPO_ROOT / "assets"
+    preferred_names = [
+        "Don't click this! Unless you want to cry all over again.mp4",
+        "Dont click this! Unless you want to cry all over again.mp4",
+    ]
+    for name in preferred_names:
+        p = assets / name
+        if p.is_file():
+            return p
+    candidates = sorted(assets.glob("*.mp4"))
+    return candidates[0] if candidates else None
 
 
 def _native_open_filename(title: str, filetypes: list[tuple[str, str]]) -> Optional[str]:
@@ -117,6 +130,8 @@ def build_video_player_page(
         border_color=ft.Colors.TRANSPARENT,
         text_size=15,
     )
+    sentence_feedback = ft.Text(value="", visible=False)
+    practice_mode_text = ft.Text("Practice: OFF", size=12, color=ft.Colors.WHITE70)
 
     play_btn = ft.IconButton(
         icon=ft.Icons.PLAY_ARROW,
@@ -125,6 +140,8 @@ def build_video_player_page(
         tooltip="Play / Pause",
     )
 
+    default_video = _default_video_path()
+
     video = ftv.Video(
         expand=True,
         playlist=[
@@ -132,8 +149,8 @@ def build_video_player_page(
                 initial_video_uri
                 if initial_video_uri
                 else (
-                    str(_DEFAULT_VIDEO.resolve())
-                    if _DEFAULT_VIDEO.is_file()
+                    str(default_video.resolve())
+                    if default_video is not None
                     else "https://user-images.githubusercontent.com/28951144/229373720-14d69157-1a56-4a78-a2f4-d7a134d7c3e9.mp4"
                 )
             )
@@ -155,7 +172,7 @@ def build_video_player_page(
     )
 
     input_col = ft.Column(
-        [caption_input, caption_display],
+        [caption_input, caption_display, sentence_feedback],
         spacing=0,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
@@ -249,11 +266,40 @@ def build_video_player_page(
     def set_caption_input(t: str) -> None:
         caption_input.value = t
 
+    def focus_caption_input() -> None:
+        page.run_task(caption_input.focus)
+
+    def set_sentence_feedback(words: list[tuple[str, bool]], visible: bool) -> None:
+        if not visible or not words:
+            sentence_feedback.visible = False
+            sentence_feedback.value = ""
+            sentence_feedback.spans = None
+            return
+        spans: list[ft.TextSpan] = []
+        for idx, (word, ok) in enumerate(words):
+            if idx > 0:
+                spans.append(ft.TextSpan(text=" "))
+            spans.append(
+                ft.TextSpan(
+                    text=word,
+                    style=ft.TextStyle(
+                        color=ft.Colors.GREEN_400 if ok else ft.Colors.RED_400,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                )
+            )
+        sentence_feedback.value = ""
+        sentence_feedback.spans = spans
+        sentence_feedback.visible = True
+
     def set_caption_input_enabled(en: bool) -> None:
         caption_input.disabled = not en
 
     def set_slider_enabled(en: bool) -> None:
         position_slider.disabled = not en
+
+    def set_practice_mode_text(t: str) -> None:
+        practice_mode_text.value = t
 
     def set_playing(playing: bool) -> None:
         play_btn.icon = ft.Icons.PAUSE if playing else ft.Icons.PLAY_ARROW
@@ -271,8 +317,11 @@ def build_video_player_page(
         set_slider_ratio=set_slider_ratio,
         set_caption_display=set_caption_display,
         set_caption_input=set_caption_input,
+        focus_caption_input=focus_caption_input,
+        set_sentence_feedback=set_sentence_feedback,
         set_caption_input_enabled=set_caption_input_enabled,
         set_slider_enabled=set_slider_enabled,
+        set_practice_mode_text=set_practice_mode_text,
         set_playing=set_playing,
         show_error=lambda m: _snack(page, m, ft.Colors.RED_700),
         show_info=lambda m: _snack(page, m, ft.Colors.BLUE_GREY_700),
@@ -327,7 +376,10 @@ def build_video_player_page(
     caption_input.on_change = lambda e: presenter.on_caption_input_changed(e.control.value or "")
 
     async def _caption_submit(_: ft.ControlEvent) -> None:
-        await presenter.next_caption(False, caption_input.value or "")
+        if presenter.is_submit_locked():
+            return
+        await presenter.submit_caption(caption_input.value or "")
+        page.update()
 
     caption_input.on_submit = _caption_submit
 
@@ -429,8 +481,16 @@ def build_video_player_page(
                 on_click=lambda _: page.run_task(presenter.run_whisper_transcript),
             ),
             ft.PopupMenuItem(
-                content="Practice mode",
-                on_click=lambda _: (presenter.toggle_practice_mode(), page.update()),
+                content="Practice mode: Full-text",
+                on_click=lambda _: (presenter.set_practice_mode("full_text"), page.update()),
+            ),
+            ft.PopupMenuItem(
+                content="Practice mode: Sentence-by-sentence",
+                on_click=lambda _: (presenter.set_practice_mode("sentence_by_sentence"), page.update()),
+            ),
+            ft.PopupMenuItem(
+                content="Practice mode: OFF",
+                on_click=lambda _: (presenter.disable_practice_mode(), page.update()),
             ),
             ft.PopupMenuItem(
                 content="Show caption",
@@ -450,13 +510,13 @@ def build_video_player_page(
         ],
     )
 
-    top_bar = ft.Row([menu], alignment=ft.MainAxisAlignment.END)
+    top_bar = ft.Row([practice_mode_text, menu], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
     async def on_key(e: ft.KeyboardEvent) -> None:
         if e.alt or e.ctrl or e.meta:
             return
         k = e.key
-        if caption_focused["v"] and k not in ("Arrow Up", "Up", "Arrow Down", "Down", "Enter", "Numpad Enter"):
+        if caption_focused["v"] and k not in ("Arrow Up", "Up", "Arrow Down", "Down"):
             # Prevent global/menu hotkeys from firing while typing caption text.
             return
         if k in ("S", "s"):
@@ -479,10 +539,6 @@ def build_video_player_page(
         elif k in ("Arrow Right", "Right"):
             ms = 600000 if e.shift else 60000
             await presenter.seek_delta_ms(ms)
-        elif k in ("Enter", "Numpad Enter") and caption_focused["v"]:
-            await presenter.replay_caption()
-            page.update()
-
     page.on_keyboard_event = on_key
 
     def on_video_error(ev: ft.ControlEvent) -> None:
