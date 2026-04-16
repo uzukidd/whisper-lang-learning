@@ -1,4 +1,4 @@
-"""Flet UI for QT6_VideoPlayer-equivalent (controls + menus + keyboard)."""
+"""Flet UI for the decoupled video player."""
 
 from __future__ import annotations
 
@@ -9,38 +9,37 @@ from typing import Optional
 import flet as ft
 import flet_video as ftv
 
-from .caption_session import CaptionSession
-from .flet_video_backend import FletVideoBackend
-from .video_player_presenter import PlayerViewHooks, VideoPlayerPresenter
+from ..application.asr import AsrService
+from ..application.practice_service import PracticeService
+from ..application.presenter import PlayerViewHooks, VideoPlayerPresenter
+from ..domain.caption_session import CaptionSession
+from ..domain.scoring import NormalizedExactSentenceScorer
+from ..infrastructure.caption_repository import CaptionRepository
+from ..infrastructure.flet_video_backend import FletVideoBackend
+from ..infrastructure.whisper_provider import WhisperAsrProvider
 
 _VIDEO_FILETYPES = [
-    (
-        "Media",
-        "*.webm *.mp4 *.ts *.avi *.mpeg *.mpg *.mkv *.m4v *.3gp "
-        "*.mp3 *.m4a *.wav *.ogg *.flac *.m3u *.m3u8",
-    ),
+    ("Media", "*.webm *.mp4 *.ts *.avi *.mpeg *.mpg *.mkv *.m4v *.3gp *.mp3 *.m4a *.wav *.ogg *.flac *.m3u *.m3u8"),
     ("All files", "*.*"),
 ]
 _CAPTION_FILETYPES = [("Caption", "*.caption"), ("All files", "*.*")]
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _default_video_path() -> Optional[Path]:
     assets = _REPO_ROOT / "assets"
-    preferred_names = [
+    for name in [
         "Don't click this! Unless you want to cry all over again.mp4",
         "Dont click this! Unless you want to cry all over again.mp4",
-    ]
-    for name in preferred_names:
-        p = assets / name
-        if p.is_file():
-            return p
+    ]:
+        candidate = assets / name
+        if candidate.is_file():
+            return candidate
     candidates = sorted(assets.glob("*.mp4"))
     return candidates[0] if candidates else None
 
 
 def _native_open_filename(title: str, filetypes: list[tuple[str, str]]) -> Optional[str]:
-    """Desktop file dialog without Flet FilePicker (avoids unknown-control on some clients)."""
     from tkinter import Tk, filedialog
 
     root = Tk()
@@ -60,7 +59,6 @@ def _native_open_filename(title: str, filetypes: list[tuple[str, str]]) -> Optio
 
 
 def _native_clipboard_get() -> Optional[str]:
-    """Read system clipboard text without ft.Clipboard (unknown control on some clients)."""
     from tkinter import TclError, Tk
 
     root = Tk()
@@ -75,9 +73,7 @@ def _native_clipboard_get() -> Optional[str]:
             root.destroy()
         except Exception:
             pass
-    if raw is None:
-        return None
-    return str(raw).strip() or None
+    return str(raw).strip() if raw else None
 
 
 def _snack(page: ft.Page, message: str, bgcolor: str) -> None:
@@ -86,10 +82,7 @@ def _snack(page: ft.Page, message: str, bgcolor: str) -> None:
     page.update()
 
 
-def build_video_player_page(
-    page: ft.Page,
-    initial_video_uri: Optional[str] = None,
-) -> None:
+def build_video_player_page(page: ft.Page, initial_video_uri: Optional[str] = None) -> None:
     page.title = "Flet Video Player"
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 0
@@ -103,18 +96,9 @@ def build_video_player_page(
         "read_only": True,
         "content_padding": ft.padding.symmetric(horizontal=6, vertical=8),
     }
-
     lbl = ft.TextField(value="00:00:00", width=time_w, text_align=ft.TextAlign.CENTER, **line_style)
     elbl = ft.TextField(value="00:00:00", width=time_w, text_align=ft.TextAlign.CENTER, **line_style)
-    position_slider = ft.Slider(
-        min=0.0,
-        max=1.0,
-        value=0.0,
-        expand=True,
-        active_color="#729fcf",
-        inactive_color="#444444",
-    )
-
+    position_slider = ft.Slider(min=0.0, max=1.0, value=0.0, expand=True, active_color="#729fcf", inactive_color="#444444")
     caption_input = ft.TextField(
         hint_text="caption input",
         bgcolor=ft.Colors.BLACK,
@@ -131,8 +115,14 @@ def build_video_player_page(
         text_size=15,
     )
     sentence_feedback = ft.Text(value="", visible=False)
+    current_video_text = ft.Text("Video: None", size=12, color=ft.Colors.WHITE70)
+    current_caption_text = ft.Text("Caption: None", size=12, color=ft.Colors.WHITE70)
+    current_media_info = ft.Column(
+        [current_video_text, current_caption_text],
+        spacing=0,
+        horizontal_alignment=ft.CrossAxisAlignment.START,
+    )
     practice_mode_text = ft.Text("Practice: OFF", size=12, color=ft.Colors.WHITE70)
-
     play_btn = ft.IconButton(
         icon=ft.Icons.PLAY_ARROW,
         icon_color=ft.Colors.WHITE,
@@ -141,7 +131,6 @@ def build_video_player_page(
     )
 
     default_video = _default_video_path()
-
     video = ftv.Video(
         expand=True,
         playlist=[
@@ -163,46 +152,17 @@ def build_video_player_page(
         show_controls=False,
     )
 
-    control_row = ft.Row(
-        [play_btn, lbl, position_slider, elbl],
-        alignment=ft.MainAxisAlignment.START,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        spacing=4,
-        visible=True,
-    )
-
-    input_col = ft.Column(
-        [caption_input, caption_display, sentence_feedback],
-        spacing=0,
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-    )
-
+    control_row = ft.Row([play_btn, lbl, position_slider, elbl], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, visible=True)
+    input_col = ft.Column([caption_input, caption_display, sentence_feedback], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     transcribe_loading = ft.AlertDialog(
         modal=True,
         title=ft.Text("Transcribing"),
-        content=ft.Row(
-            [
-                ft.ProgressRing(),
-                ft.Text("Loading, please wait..."),
-            ],
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        content=ft.Row([ft.ProgressRing(), ft.Text("Loading, please wait...")], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
     )
-
     root = ft.Container(
         expand=True,
         padding=0,
-        content=ft.Column(
-            [
-                video,
-                input_col,
-                control_row,
-            ],
-            expand=True,
-            spacing=0,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        ),
+        content=ft.Column([video, input_col, control_row], expand=True, spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
     )
 
     backend = FletVideoBackend(page, video)
@@ -215,9 +175,9 @@ def build_video_player_page(
 
         def close(ok: bool) -> None:
             holder["ok"] = ok
-            d = dlg_holder.get("d")
-            if d is not None:
-                d.open = False
+            dialog = dlg_holder.get("d")
+            if dialog is not None:
+                dialog.open = False
             done.set()
             page.update()
 
@@ -225,10 +185,7 @@ def build_video_player_page(
             modal=True,
             title=ft.Text("Finish practice"),
             content=ft.Text("Are you sure to finish the practice?"),
-            actions=[
-                ft.TextButton("Cancel", on_click=lambda _: close(False)),
-                ft.TextButton("OK", on_click=lambda _: close(True)),
-            ],
+            actions=[ft.TextButton("Cancel", on_click=lambda _: close(False)), ft.TextButton("OK", on_click=lambda _: close(True))],
         )
         dlg_holder["d"] = dlg
         page.overlay.append(dlg)
@@ -257,14 +214,20 @@ def build_video_player_page(
         lbl.value = a
         elbl.value = b
 
-    def set_slider_ratio(r: float) -> None:
-        position_slider.value = r
+    def set_slider_ratio(ratio: float) -> None:
+        position_slider.value = ratio
 
-    def set_caption_display(t: str) -> None:
-        caption_display.value = t
+    def set_caption_display(text: str) -> None:
+        caption_display.value = text
 
-    def set_caption_input(t: str) -> None:
-        caption_input.value = t
+    def set_current_video_name(name: str) -> None:
+        current_video_text.value = f"Video: {name}"
+
+    def set_current_caption_name(name: str) -> None:
+        current_caption_text.value = f"Caption: {name}"
+
+    def set_caption_input(text: str) -> None:
+        caption_input.value = text
 
     def focus_caption_input() -> None:
         page.run_task(caption_input.focus)
@@ -279,27 +242,22 @@ def build_video_player_page(
         for idx, (word, ok) in enumerate(words):
             if idx > 0:
                 spans.append(ft.TextSpan(text=" "))
-            spans.append(
-                ft.TextSpan(
-                    text=word,
-                    style=ft.TextStyle(
-                        color=ft.Colors.GREEN_400 if ok else ft.Colors.RED_400,
-                        weight=ft.FontWeight.W_600,
-                    ),
-                )
-            )
+            spans.append(ft.TextSpan(text=word, style=ft.TextStyle(color=ft.Colors.GREEN_400 if ok else ft.Colors.RED_400, weight=ft.FontWeight.W_600)))
         sentence_feedback.value = ""
         sentence_feedback.spans = spans
         sentence_feedback.visible = True
 
-    def set_caption_input_enabled(en: bool) -> None:
-        caption_input.disabled = not en
+    def set_caption_input_enabled(enabled: bool) -> None:
+        caption_input.disabled = not enabled
 
-    def set_slider_enabled(en: bool) -> None:
-        position_slider.disabled = not en
+    def set_caption_input_read_only(read_only: bool) -> None:
+        caption_input.read_only = read_only
 
-    def set_practice_mode_text(t: str) -> None:
-        practice_mode_text.value = t
+    def set_slider_enabled(enabled: bool) -> None:
+        position_slider.disabled = not enabled
+
+    def set_practice_mode_text(text: str) -> None:
+        practice_mode_text.value = text
 
     def set_playing(playing: bool) -> None:
         play_btn.icon = ft.Icons.PAUSE if playing else ft.Icons.PLAY_ARROW
@@ -315,36 +273,41 @@ def build_video_player_page(
     hooks = PlayerViewHooks(
         set_times=set_times,
         set_slider_ratio=set_slider_ratio,
+        set_current_video_name=set_current_video_name,
+        set_current_caption_name=set_current_caption_name,
         set_caption_display=set_caption_display,
         set_caption_input=set_caption_input,
         focus_caption_input=focus_caption_input,
         set_sentence_feedback=set_sentence_feedback,
         set_caption_input_enabled=set_caption_input_enabled,
+        set_caption_input_read_only=set_caption_input_read_only,
         set_slider_enabled=set_slider_enabled,
         set_practice_mode_text=set_practice_mode_text,
         set_playing=set_playing,
-        show_error=lambda m: _snack(page, m, ft.Colors.RED_700),
-        show_info=lambda m: _snack(page, m, ft.Colors.BLUE_GREY_700),
+        show_error=lambda message: _snack(page, message, ft.Colors.RED_700),
+        show_info=lambda message: _snack(page, message, ft.Colors.BLUE_GREY_700),
         set_transcribe_busy=set_transcribe_busy,
         confirm_finish_practice=confirm_finish_practice,
         on_language_font=on_language_font,
         request_exit_app=lambda: page.run_task(request_exit_app_async),
     )
 
-    presenter = VideoPlayerPresenter(backend, session, hooks)
+    scorer = NormalizedExactSentenceScorer()
+    presenter = VideoPlayerPresenter(
+        backend,
+        session,
+        hooks,
+        scorer=scorer,
+        caption_repository=CaptionRepository(),
+        asr_service=AsrService(WhisperAsrProvider()),
+        practice_service=PracticeService(scorer),
+    )
     presenter.bind_tick()
     backend.arm_load_handler()
 
     caption_focused = {"v": False}
-
-    def _cap_focus_in(_: ft.ControlEvent) -> None:
-        caption_focused["v"] = True
-
-    def _cap_focus_out(_: ft.ControlEvent) -> None:
-        caption_focused["v"] = False
-
-    caption_input.on_focus = _cap_focus_in
-    caption_input.on_blur = _cap_focus_out
+    caption_input.on_focus = lambda _: caption_focused.__setitem__("v", True)
+    caption_input.on_blur = lambda _: caption_focused.__setitem__("v", False)
 
     async def _toggle_play(_: ft.ControlEvent) -> None:
         await presenter.toggle_play()
@@ -372,7 +335,6 @@ def build_video_player_page(
 
     position_slider.on_change_start = _on_slider_change_start
     position_slider.on_change_end = _on_slider_commit
-
     caption_input.on_change = lambda e: presenter.on_caption_input_changed(e.control.value or "")
 
     async def _caption_submit(_: ft.ControlEvent) -> None:
@@ -400,11 +362,10 @@ def build_video_player_page(
         page.update()
 
     myinfo = (
-        "Flet player (QT6 port)\n\n"
+        "Whisper© Learning\n\n"
         "UP/DOWN: switch lines in practice mode\n"
         "LEFT/RIGHT: seek ±1 min (Shift: ±10 min)\n"
         "S: toggle control bar\n"
-        "F: fullscreen\n"
         "Return: replay caption (when caption input focused)\n"
         "Up/Down: prev/next segment (when caption input focused)\n"
     )
@@ -417,133 +378,103 @@ def build_video_player_page(
 
     async def _paste_url(_: Optional[ft.ControlEvent] = None) -> None:
         try:
-            u = await asyncio.to_thread(_native_clipboard_get)
+            url = await asyncio.to_thread(_native_clipboard_get)
         except ImportError:
             hooks.show_error("tkinter is not available for clipboard read.")
             return
-        if not u:
+        if not url:
             hooks.show_error("Clipboard is empty or non-text.")
             return
         try:
-            await presenter.play_clipboard_url(u)
-        except Exception as ex:
-            hooks.show_error(str(ex))
+            await presenter.play_clipboard_url(url)
+        except Exception as exc:
+            hooks.show_error(str(exc))
 
     async def _paste_yt(_: Optional[ft.ControlEvent] = None) -> None:
         try:
-            u = await asyncio.to_thread(_native_clipboard_get)
+            url = await asyncio.to_thread(_native_clipboard_get)
         except ImportError:
             hooks.show_error("tkinter is not available for clipboard read.")
             return
-        if not u:
+        if not url:
             hooks.show_error("Clipboard is empty or non-text.")
             return
         try:
-            await presenter.play_youtube_clipboard(u)
-        except Exception as ex:
-            hooks.show_error(str(ex))
+            await presenter.play_youtube_clipboard(url)
+        except Exception as exc:
+            hooks.show_error(str(exc))
 
     async def _pick_open_video() -> None:
         try:
-            p = await asyncio.to_thread(_native_open_filename, "Open Movie", _VIDEO_FILETYPES)
+            path = await asyncio.to_thread(_native_open_filename, "Open Movie", _VIDEO_FILETYPES)
         except ImportError:
             _snack(page, "tkinter is not available for file browse.", ft.Colors.RED_700)
             return
-        if p:
+        if path:
             try:
-                await presenter.load_local_path(p, True)
-            except Exception as ex:
-                hooks.show_error(str(ex))
+                await presenter.load_local_path(path, True)
+            except Exception as exc:
+                hooks.show_error(str(exc))
 
     async def _pick_open_caption() -> None:
         try:
-            p = await asyncio.to_thread(_native_open_filename, "Open Caption", _CAPTION_FILETYPES)
+            path = await asyncio.to_thread(_native_open_filename, "Open Caption", _CAPTION_FILETYPES)
         except ImportError:
             _snack(page, "tkinter is not available for file browse.", ft.Colors.RED_700)
             return
-        if p:
-            presenter.load_caption_path(p)
+        if path:
+            presenter.load_caption_path(path)
             page.update()
 
     menu = ft.PopupMenuButton(
         icon=ft.Icons.MENU,
         items=[
-            ft.PopupMenuItem(
-                content="Open video file…",
-                on_click=lambda _: page.run_task(_pick_open_video),
-            ),
-            ft.PopupMenuItem(
-                content="Open caption…",
-                on_click=lambda _: page.run_task(_pick_open_caption),
-            ),
-            ft.PopupMenuItem(
-                content="Transcribe (Whisper)",
-                on_click=lambda _: page.run_task(presenter.run_whisper_transcript),
-            ),
-            ft.PopupMenuItem(
-                content="Practice mode: Full-text",
-                on_click=lambda _: (presenter.set_practice_mode("full_text"), page.update()),
-            ),
-            ft.PopupMenuItem(
-                content="Practice mode: Sentence-by-sentence",
-                on_click=lambda _: (presenter.set_practice_mode("sentence_by_sentence"), page.update()),
-            ),
-            ft.PopupMenuItem(
-                content="Practice mode: OFF",
-                on_click=lambda _: (presenter.disable_practice_mode(), page.update()),
-            ),
-            ft.PopupMenuItem(
-                content="Show caption",
-                on_click=lambda _: (presenter.toggle_show_caption(), page.update()),
-            ),
+            ft.PopupMenuItem(content="Open video file…", on_click=lambda _: page.run_task(_pick_open_video)),
+            ft.PopupMenuItem(content="Open caption…", on_click=lambda _: page.run_task(_pick_open_caption)),
+            ft.PopupMenuItem(content="Transcribe (Whisper)", on_click=lambda _: page.run_task(presenter.run_whisper_transcript)),
+            ft.PopupMenuItem(content="Practice mode: Full-text", on_click=lambda _: (presenter.set_practice_mode("full_text"), page.update())),
+            ft.PopupMenuItem(content="Practice mode: Sentence-by-sentence", on_click=lambda _: (presenter.set_practice_mode("sentence_by_sentence"), page.update())),
+            ft.PopupMenuItem(content="Practice mode: OFF", on_click=lambda _: (presenter.disable_practice_mode(), page.update())),
+            ft.PopupMenuItem(content="Show caption", on_click=lambda _: (presenter.toggle_show_caption(), page.update())),
             ft.PopupMenuItem(content="Play URL from clipboard", on_click=lambda _: page.run_task(_paste_url)),
-            ft.PopupMenuItem(
-                content="YouTube URL from clipboard (yt-dlp)",
-                on_click=lambda _: page.run_task(_paste_yt),
-            ),
+            ft.PopupMenuItem(content="YouTube URL from clipboard (yt-dlp)", on_click=lambda _: page.run_task(_paste_yt)),
             ft.PopupMenuItem(content="Toggle control bar (S)", on_click=lambda _: toggle_controls_visible()),
-            ft.PopupMenuItem(content="Fullscreen (F)", on_click=lambda _: page.run_task(toggle_fullscreen)),
             ft.PopupMenuItem(content="16 : 9", on_click=lambda _: set_aspect169()),
             ft.PopupMenuItem(content="4 : 3", on_click=lambda _: set_aspect43()),
             ft.PopupMenuItem(content="Info (I)", on_click=lambda _: show_info_dialog()),
             ft.PopupMenuItem(content="Exit", on_click=lambda _: page.run_task(request_exit_app_async)),
         ],
     )
-
     top_bar = ft.Row([practice_mode_text, menu], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
     async def on_key(e: ft.KeyboardEvent) -> None:
         if e.alt or e.ctrl or e.meta:
             return
-        k = e.key
-        if caption_focused["v"] and k not in ("Arrow Up", "Up", "Arrow Down", "Down"):
-            # Prevent global/menu hotkeys from firing while typing caption text.
+        key = e.key
+        if caption_focused["v"] and key not in ("Arrow Up", "Up", "Arrow Down", "Down"):
             return
-        if k in ("S", "s"):
+        if key in ("S", "s"):
             toggle_controls_visible()
-        elif k in ("F", "f"):
-            await toggle_fullscreen()
-        elif k in ("I", "i"):
+        elif key in ("I", "i"):
             show_info_dialog()
-        elif k in ("Arrow Up", "Up"):
+        elif key in ("Arrow Up", "Up"):
             if presenter.session.practice_mode:
                 await presenter.last_caption()
             page.update()
-        elif k in ("Arrow Down", "Down"):
+        elif key in ("Arrow Down", "Down"):
             if presenter.session.practice_mode:
                 await presenter.next_caption(True, caption_input.value or "")
             page.update()
-        elif k in ("Arrow Left", "Left"):
-            ms = 600000 if e.shift else 60000
-            await presenter.seek_delta_ms(-ms)
-        elif k in ("Arrow Right", "Right"):
-            ms = 600000 if e.shift else 60000
-            await presenter.seek_delta_ms(ms)
+        elif key in ("Arrow Left", "Left"):
+            await presenter.seek_delta_ms(-(600000 if e.shift else 60000))
+        elif key in ("Arrow Right", "Right"):
+            await presenter.seek_delta_ms(600000 if e.shift else 60000)
+
     page.on_keyboard_event = on_key
+    video.on_error = lambda ev: hooks.show_error(str(ev.data) if ev.data else "Video error")
+    if initial_video_uri:
+        set_current_video_name(Path(initial_video_uri).name if "://" not in initial_video_uri else initial_video_uri)
+    elif default_video is not None:
+        set_current_video_name(default_video.name)
 
-    def on_video_error(ev: ft.ControlEvent) -> None:
-        hooks.show_error(str(ev.data) if ev.data else "Video error")
-
-    video.on_error = on_video_error
-
-    page.add(ft.Column([top_bar, root], expand=True, spacing=0))
+    page.add(ft.Column([top_bar, current_media_info, root], expand=True, spacing=0))

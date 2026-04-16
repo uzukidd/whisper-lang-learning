@@ -1,4 +1,4 @@
-"""Flet + flet_video implementation of PlaybackPort and position polling."""
+"""Flet + flet_video implementation of the playback port."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Optional
 import flet as ft
 import flet_video as ftv
 
-from .playback_port import PlaybackPort
+from ..ports.playback_port import PlaybackPort
 
 TickCallback = Callable[[int, int], Awaitable[None]]
 
@@ -28,8 +28,6 @@ class FletVideoBackend(PlaybackPort):
         self._on_tick = cb
 
     def arm_load_handler(self) -> None:
-        """Wire video.on_load once: wait for duration then run a single poll loop for app lifetime."""
-
         def _on_video_load(_: ft.ControlEvent) -> None:
             if self._tick_armed:
                 return
@@ -105,7 +103,6 @@ class FletVideoBackend(PlaybackPort):
         try:
             await self._video.jump_to(0)
         except Exception:
-            # Some backends can start from first item without explicit jump.
             pass
         if autoplay:
             await self._video.play()
@@ -113,8 +110,8 @@ class FletVideoBackend(PlaybackPort):
         if self.duration_us <= 0:
             raise RuntimeError(f"Video load timeout or unsupported resource: {uri}")
 
-    def set_scrubbing(self, v: bool) -> None:
-        self.scrubbing = v
+    def set_scrubbing(self, value: bool) -> None:
+        self.scrubbing = value
 
     def slider_ratio_from_position(self, position_us: int) -> float:
         if self.duration_us <= 0:

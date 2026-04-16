@@ -1,4 +1,4 @@
-"""Resolve a YouTube page URL to a direct media URL via yt-dlp (no UI)."""
+"""Resolve a YouTube page URL to a direct media URL via yt-dlp."""
 
 from __future__ import annotations
 
@@ -7,17 +7,16 @@ import shutil
 
 
 async def resolve_youtube_stream_url(page_url: str, format_selector: str = "worst") -> str:
-    """
-    Run yt-dlp -g -f <format> <url> and return first line (stream URL).
-    Raises RuntimeError if yt-dlp is missing or fails.
-    """
     exe = shutil.which("yt-dlp") or shutil.which("youtube-dl")
     if not exe:
         raise RuntimeError("yt-dlp not found on PATH; install: pip install yt-dlp")
 
-    cmd = [exe, "-g", "-f", format_selector, page_url.strip()]
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
+        exe,
+        "-g",
+        "-f",
+        format_selector,
+        page_url.strip(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

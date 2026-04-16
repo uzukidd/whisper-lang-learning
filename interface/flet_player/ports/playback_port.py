@@ -1,4 +1,4 @@
-"""Abstract playback backend (implemented by Flet video adapter)."""
+"""Abstract playback backend contract."""
 
 from __future__ import annotations
 

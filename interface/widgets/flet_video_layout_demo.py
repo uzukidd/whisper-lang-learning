@@ -24,7 +24,7 @@ if str(_ROOT) not in sys.path:
 
 import flet as ft
 
-from interface.flet_player.flet_video_player_page import build_video_player_page
+from interface.flet_player.ui.flet_video_player_page import build_video_player_page
 
 
 def main(page: ft.Page) -> None:

@@ -1,4 +1,4 @@
-"""Time formatting for playback UI (no Flet dependency)."""
+"""Time formatting helpers for playback UI."""
 
 
 def format_hms_from_us(total_us: int) -> str:
