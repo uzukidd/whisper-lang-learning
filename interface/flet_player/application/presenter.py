@@ -14,9 +14,12 @@ from ..infrastructure.caption_pickle_io import save_result_log
 from ..infrastructure.caption_repository import CaptionRepository
 from ..infrastructure.time_format import format_hms_from_us
 from ..infrastructure.whisper_provider import WhisperAsrProvider
+from ..infrastructure.youtube_catalog import download_video_for_practice
 from ..infrastructure.yt_resolve import resolve_youtube_stream_url
 from .asr import AsrService
 from .practice_service import PracticeService
+
+_YOUTUBE_CACHE_DIR = Path(__file__).resolve().parents[3] / "assets" / "cache" / "youtube"
 
 
 @dataclass
@@ -185,6 +188,24 @@ class VideoPlayerPresenter:
 
     async def play_youtube_clipboard(self, page_url: str) -> None:
         await self.load_stream_uri(await resolve_youtube_stream_url(page_url.strip()))
+
+    async def start_practice_from_youtube(self, page_url: str) -> None:
+        self.hooks.set_transcribe_busy(True, "Downloading video...")
+        try:
+            local_path = await asyncio.to_thread(
+                download_video_for_practice,
+                page_url.strip(),
+                _YOUTUBE_CACHE_DIR,
+            )
+        except Exception as exc:
+            self.hooks.set_transcribe_busy(False, "")
+            self.hooks.show_error(str(exc))
+            return
+        self.hooks.set_transcribe_busy(False, "")
+        await self.load_local_path(str(local_path), load_sidecar_caption=True)
+        caption_path = Path(local_path).with_suffix(".caption")
+        if not caption_path.is_file():
+            await self.run_whisper_transcript()
 
     def load_caption_path(self, path: str) -> None:
         data = self.caption_repository.load(path)

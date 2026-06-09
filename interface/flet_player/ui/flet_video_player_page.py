@@ -82,7 +82,12 @@ def _snack(page: ft.Page, message: str, bgcolor: str) -> None:
     page.update()
 
 
-def build_video_player_page(page: ft.Page, initial_video_uri: Optional[str] = None) -> None:
+def build_video_player_page(
+    page: ft.Page,
+    initial_video_uri: Optional[str] = None,
+    youtube_page_url: Optional[str] = None,
+    auto_transcribe: bool = False,
+) -> None:
     page.title = "Flet Video Player"
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 0
@@ -437,7 +442,7 @@ def build_video_player_page(page: ft.Page, initial_video_uri: Optional[str] = No
             ft.PopupMenuItem(content="Practice mode: OFF", on_click=lambda _: (presenter.disable_practice_mode(), page.update())),
             ft.PopupMenuItem(content="Show caption", on_click=lambda _: (presenter.toggle_show_caption(), page.update())),
             ft.PopupMenuItem(content="Play URL from clipboard", on_click=lambda _: page.run_task(_paste_url)),
-            ft.PopupMenuItem(content="YouTube URL from clipboard (yt-dlp)", on_click=lambda _: page.run_task(_paste_yt)),
+            ft.PopupMenuItem(content="YouTube URL from clipboard", on_click=lambda _: page.run_task(_paste_yt)),
             ft.PopupMenuItem(content="Toggle control bar (S)", on_click=lambda _: toggle_controls_visible()),
             ft.PopupMenuItem(content="16 : 9", on_click=lambda _: set_aspect169()),
             ft.PopupMenuItem(content="4 : 3", on_click=lambda _: set_aspect43()),
@@ -472,9 +477,18 @@ def build_video_player_page(page: ft.Page, initial_video_uri: Optional[str] = No
 
     page.on_keyboard_event = on_key
     video.on_error = lambda ev: hooks.show_error(str(ev.data) if ev.data else "Video error")
-    if initial_video_uri:
+    if youtube_page_url:
+        set_current_video_name(Path(youtube_page_url).name if "://" not in youtube_page_url else youtube_page_url)
+    elif initial_video_uri:
         set_current_video_name(Path(initial_video_uri).name if "://" not in initial_video_uri else initial_video_uri)
     elif default_video is not None:
         set_current_video_name(default_video.name)
 
     page.add(ft.Column([top_bar, current_media_info, root], expand=True, spacing=0))
+
+    if youtube_page_url and auto_transcribe:
+        async def _auto_youtube_practice() -> None:
+            await presenter.start_practice_from_youtube(youtube_page_url)
+            page.update()
+
+        page.run_task(_auto_youtube_practice)

@@ -1,0 +1,98 @@
+{
+    "id": "UCxsZ6NCzjU_t4YSxQLBcM5A",
+    "channel": "saba",
+    "channel_id": "UCxsZ6NCzjU_t4YSxQLBcM5A",
+    "title": "saba - Videos",
+    "availability": null,
+    "channel_follower_count": 1440000,
+    "description": "yoho! i'm saba the fish! 🐟\n\n",
+    "tags": [
+      "vtuber",
+      "sameko saba",
+      "fish vtuber",
+      "blue vtuber",
+      "gaming",
+      "comedy"
+    ],
+    "thumbnails": [
+      {
+        "url": "https://yt3.googleusercontent.com/q7ZT-pjd81lkO6u3Ot_0_tJYbL0nbP9H_Z8hbTyKiH8M2ygfOeQU-b9CbuIRubeQ6sFdkwQ4zLc=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "height": 175,
+        "width": 1060,
+        "preference": -10,
+        "id": "0",
+        "resolution": "1060x175"
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/gNZv93GVlg3GAco7HTg2OXl_9s2Pm3lG6DxNfOXqPkLRNcM5BSEOAcQGpgQ8AejiEam5ElLG=s900-c-k-c0x00ffffff-no-rj",
+        "height": 900,
+        "width": 900,
+        "id": "7",
+        "resolution": "900x900"
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/gNZv93GVlg3GAco7HTg2OXl_9s2Pm3lG6DxNfOXqPkLRNcM5BSEOAcQGpgQ8AejiEam5ElLG=s0",
+        "id": "avatar_uncropped",
+        "preference": 1
+      }
+    ],
+    "uploader_id": "@SamekoSaba",
+    "uploader_url": "https://www.youtube.com/@SamekoSaba",
+    "modified_date": null,
+    "view_count": null,
+    "playlist_count": 2,
+    "uploader": "saba",
+    "channel_url": "https://www.youtube.com/channel/UCxsZ6NCzjU_t4YSxQLBcM5A",
+    "_type": "playlist",
+    "entries": [
+      {
+        "title": "Blue Yellow Peak",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/tWGMyYN0y3M/hqdefault.jpg?sqp=-oaymwEcCNACELwBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLA2cBK7DaIAOC0_iUVtq2YKLLr4UA",
+            "height": 188,
+            "width": 336
+          }
+        ],
+        "duration": 526.0,
+        "timestamp": null,
+        "ie_key": "Youtube",
+        "id": "tWGMyYN0y3M",
+        "_type": "url",
+        "url": "https://www.youtube.com/watch?v=tWGMyYN0y3M",
+        "__x_forwarded_for_ip": null
+      },
+      {
+        "title": "saba / saba",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/k3cryiz8nJo/hqdefault.jpg?sqp=-oaymwEcCNACELwBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLAJvIvSRPdfviSXfP6r1JTbUtmfcg",
+            "height": 188,
+            "width": 336
+          }
+        ],
+        "duration": 142.0,
+        "timestamp": null,
+        "ie_key": "Youtube",
+        "id": "k3cryiz8nJo",
+        "_type": "url",
+        "url": "https://www.youtube.com/watch?v=k3cryiz8nJo",
+        "__x_forwarded_for_ip": null
+      }
+    ],
+    "extractor_key": "YoutubeTab",
+    "extractor": "youtube:tab",
+    "webpage_url": "https://www.youtube.com/@SamekoSaba/videos",
+    "original_url": "https://www.youtube.com/@SamekoSaba/videos",
+    "webpage_url_basename": "videos",
+    "webpage_url_domain": "youtube.com",
+    "release_year": null,
+    "epoch": 1780986103,
+    "__files_to_move": {},
+    "_version": {
+      "version": "2026.03.17",
+      "current_git_head": null,
+      "release_git_head": "04d6974f502bbdfaed72c624344f262e30ad9708",
+      "repository": "yt-dlp/yt-dlp"
+    }
+  }

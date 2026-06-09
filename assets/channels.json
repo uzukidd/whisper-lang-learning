@@ -1,0 +1,14 @@
+{
+  "channels": [
+    {
+      "id": "samekosaba",
+      "name": "SamekoSaba",
+      "url": "https://www.youtube.com/@SamekoSaba/videos"
+    },
+    {
+      "id": "veritasium",
+      "name": "Veritasium",
+      "url": "https://www.youtube.com/@veritasium/videos"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 # debugging & third-partly components & testing
 third-partly-comps/
+assets/cache
 documents/
 .txt
 .pkl

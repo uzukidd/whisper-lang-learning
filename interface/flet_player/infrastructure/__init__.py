@@ -5,6 +5,7 @@ from .caption_repository import CaptionRepository
 from .flet_video_backend import FletVideoBackend
 from .time_format import format_hms_from_ms, format_hms_from_us
 from .whisper_provider import WhisperAsrProvider, transcribe_media_to_caption_segments
+from .youtube_catalog import download_video_for_practice, fetch_channel_videos, fetch_video_detail
 from .yt_resolve import resolve_youtube_stream_url
 
 __all__ = [
@@ -14,6 +15,9 @@ __all__ = [
     "build_result_log",
     "format_hms_from_ms",
     "format_hms_from_us",
+    "download_video_for_practice",
+    "fetch_channel_videos",
+    "fetch_video_detail",
     "load_caption_pickle",
     "resolve_youtube_stream_url",
     "save_caption_pickle",
