@@ -87,22 +87,45 @@ class YouTubeDownloaderTests(unittest.TestCase):
         self.assertEqual("2:05", summary.duration_text)
         self.assertEqual("20260301", summary.upload_date)
 
-    def test_fetch_video_description(self) -> None:
+    def test_fetch_video_description_falls_back_to_pytubefix(self) -> None:
+        original_ytdlp = downloader.youtube_ytdlp.fetch_video_description
         original_build = downloader._build_youtube
+        downloader.youtube_ytdlp.fetch_video_description = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("yt-dlp failed")
+        )
         downloader._build_youtube = lambda *_args, **_kwargs: FakeYouTube()
         try:
             description = downloader.fetch_video_description("https://www.youtube.com/watch?v=abc123")
         finally:
+            downloader.youtube_ytdlp.fetch_video_description = original_ytdlp
             downloader._build_youtube = original_build
 
         self.assertEqual("Hello description", description)
 
-    def test_fetch_video_detail(self) -> None:
+    def test_fetch_video_description_tries_ytdlp_when_pytubefix_empty(self) -> None:
+        original_ytdlp = downloader.youtube_ytdlp.fetch_video_description
+        original_pytube = downloader._fetch_video_description_pytubefix
+        downloader.youtube_ytdlp.fetch_video_description = lambda *_args, **_kwargs: "yt-dlp description"
+        downloader._fetch_video_description_pytubefix = lambda *_args, **_kwargs: ""
+        try:
+            description = downloader.fetch_video_description("https://www.youtube.com/watch?v=abc123")
+        finally:
+            downloader.youtube_ytdlp.fetch_video_description = original_ytdlp
+            downloader._fetch_video_description_pytubefix = original_pytube
+
+        self.assertEqual("yt-dlp description", description)
+
+    def test_fetch_video_detail_falls_back_to_pytubefix(self) -> None:
+        original_ytdlp = downloader.youtube_ytdlp.fetch_video_detail
         original_build = downloader._build_youtube
+        downloader.youtube_ytdlp.fetch_video_detail = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("yt-dlp failed")
+        )
         downloader._build_youtube = lambda *_args, **_kwargs: FakeYouTube()
         try:
             detail = downloader.fetch_video_detail("https://www.youtube.com/watch?v=abc123")
         finally:
+            downloader.youtube_ytdlp.fetch_video_detail = original_ytdlp
             downloader._build_youtube = original_build
 
         self.assertEqual("Hello description", detail.description)
@@ -120,6 +143,38 @@ class YouTubeDownloaderTests(unittest.TestCase):
 
         self.assertIsNone(total)
         self.assertEqual([], page_videos)
+
+    def test_summarize_yt_dlp_output_skips_download_spam(self) -> None:
+        from interface.flet_player.infrastructure.yt_dlp_common import summarize_yt_dlp_output
+
+        text = "\n".join(
+            [
+                "[download]  22.6% of ~   8.90MiB at  111.15KiB/s ETA 01:05 (frag 23/107)",
+                "ERROR: [youtube] abc123: Sign in to confirm you're not a bot",
+            ]
+        )
+        self.assertEqual(
+            "ERROR: [youtube] abc123: Sign in to confirm you're not a bot",
+            summarize_yt_dlp_output(text),
+        )
+
+    def test_parse_yt_dlp_download_percent(self) -> None:
+        from interface.flet_player.infrastructure.yt_dlp_common import parse_yt_dlp_download_fraction
+
+        line = "[download]  22.6% of ~   8.90MiB at  111.15KiB/s ETA 01:05 (frag 23/107)"
+        fraction = parse_yt_dlp_download_fraction(line)
+
+        self.assertIsNotNone(fraction)
+        self.assertAlmostEqual(23 / 107, fraction, places=4)
+
+        plain = "[download]  45.2% of ~  10.50MiB at  1.23MiB/s ETA 00:05"
+        self.assertAlmostEqual(0.452, parse_yt_dlp_download_fraction(plain), places=4)
+
+        bounced = parse_yt_dlp_download_fraction(
+            "[download]   6.8% of ~  10.82MiB at  127.04KiB/s ETA 00:58 (frag 8/107)",
+            last_fraction=0.094,
+        )
+        self.assertAlmostEqual(8 / 107, bounced, places=4)
 
     def test_pick_channel_avatar_url_prefers_uncropped_avatar(self) -> None:
         payload = {

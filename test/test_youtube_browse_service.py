@@ -56,6 +56,7 @@ class YouTubeBrowseServiceTests(unittest.TestCase):
                                 "id": "samekosaba",
                                 "name": "SamekoSaba",
                                 "url": "https://www.youtube.com/@SamekoSaba/videos",
+                                "source": "youtube",
                             }
                         ]
                     }
@@ -71,6 +72,30 @@ class YouTubeBrowseServiceTests(unittest.TestCase):
         self.assertEqual("SamekoSaba", channels[0].name)
         self.assertIsNotNone(default_channel)
         self.assertEqual("samekosaba", default_channel.id)
+        self.assertEqual("youtube", default_channel.source)
+
+    def test_load_channels_defaults_source_to_youtube(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            channels_path = Path(temp_dir) / "channels.json"
+            channels_path.write_text(
+                json.dumps(
+                    {
+                        "channels": [
+                            {
+                                "id": "samekosaba",
+                                "name": "SamekoSaba",
+                                "url": "https://www.youtube.com/@SamekoSaba/videos",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = YouTubeBrowseService(channels_path=channels_path, cache_dir=temp_dir)
+
+            channel = service.load_channels()[0]
+
+        self.assertEqual("youtube", channel.source)
 
     def test_get_channel_icon_src_uses_disk_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -84,6 +109,7 @@ class YouTubeBrowseServiceTests(unittest.TestCase):
                                 "id": "samekosaba",
                                 "name": "SamekoSaba",
                                 "url": "https://www.youtube.com/@SamekoSaba/videos",
+                                "source": "youtube",
                             }
                         ]
                     }
@@ -104,6 +130,33 @@ class YouTubeBrowseServiceTests(unittest.TestCase):
             src = service.get_channel_icon_src(channel)
 
         self.assertEqual(str(cached_icon.resolve()), src)
+
+    def test_default_channel_is_none_when_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            channels_path = Path(temp_dir) / "channels.json"
+            channels_path.write_text(json.dumps({"channels": []}), encoding="utf-8")
+            service = YouTubeBrowseService(channels_path=channels_path, cache_dir=temp_dir)
+
+            self.assertEqual([], service.load_channels())
+            self.assertIsNone(service.default_channel())
+
+    def test_add_and_remove_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            channels_path = Path(temp_dir) / "channels.json"
+            channels_path.write_text(json.dumps({"channels": []}), encoding="utf-8")
+            service = YouTubeBrowseService(channels_path=channels_path, cache_dir=temp_dir)
+
+            channel = service.add_channel(
+                "https://www.youtube.com/@ExampleCreator",
+                "Example Creator",
+            )
+            self.assertEqual("examplecreator", channel.id)
+            self.assertEqual("Example Creator", channel.name)
+            self.assertEqual("https://www.youtube.com/@ExampleCreator/videos", channel.url)
+            self.assertEqual(1, len(service.load_channels()))
+
+            service.remove_channel(channel.id)
+            self.assertEqual([], service.load_channels())
 
 if __name__ == "__main__":
     unittest.main()

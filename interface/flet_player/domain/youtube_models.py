@@ -5,19 +5,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+DEFAULT_CHANNEL_SOURCE = "youtube"
+SUPPORTED_CHANNEL_SOURCES = frozenset({DEFAULT_CHANNEL_SOURCE})
+
 
 @dataclass(frozen=True)
 class SubscribedChannel:
     id: str
     name: str
     url: str
+    source: str = DEFAULT_CHANNEL_SOURCE
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SubscribedChannel":
+        source = str(data.get("source") or DEFAULT_CHANNEL_SOURCE).strip().lower()
+        if source not in SUPPORTED_CHANNEL_SOURCES:
+            print(f"[ERROR] SubscribedChannel.from_dict: unsupported channel source: {source}", flush=True)
+            raise ValueError(f"Unsupported channel source: {source}")
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
             url=str(data["url"]),
+            source=source,
         )
 
 
@@ -85,6 +94,42 @@ class YouTubeVideoDetail:
             duration_text=summary.duration_text,
             description=description,
         )
+
+
+def derive_channel_id_from_url(url: str) -> str:
+    text = (url or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if "/@" in text:
+        handle = text.split("/@", 1)[1].split("/")[0].split("?", 1)[0].strip()
+        return handle.lower()
+    if "/channel/" in text:
+        return text.split("/channel/", 1)[1].split("/")[0].split("?", 1)[0].strip()
+    if "/c/" in text:
+        return text.split("/c/", 1)[1].split("/")[0].split("?", 1)[0].strip().lower()
+    slug = text.rsplit("/", 1)[-1].split("?", 1)[0].strip().lower()
+    return slug
+
+
+def normalize_channel_videos_url(url: str) -> str:
+    text = (url or "").strip().rstrip("/")
+    if not text:
+        raise ValueError("Channel URL is required")
+    if text.endswith("/videos"):
+        return text
+    return f"{text}/videos"
+
+
+def extract_video_id_from_url(url: str) -> str:
+    text = (url or "").strip()
+    if not text:
+        return ""
+    marker = "v="
+    if marker in text:
+        return text.split(marker, 1)[1].split("&", 1)[0].strip()
+    if "youtu.be/" in text:
+        return text.rsplit("youtu.be/", 1)[-1].split("?", 1)[0].split("/", 1)[0].strip()
+    return ""
 
 
 def normalize_watch_url(video_id: str, webpage_url: str = "") -> str:

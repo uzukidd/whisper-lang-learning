@@ -5,6 +5,8 @@ from __future__ import annotations
 import urllib.request
 from pathlib import Path
 
+from .error_log import print_error
+
 
 def fetch_thumbnail_cached(
     video_id: str,
@@ -32,5 +34,6 @@ def fetch_thumbnail_cached(
         with opener.open(request, timeout=30) as response:
             dest.write_bytes(response.read())
         return dest.resolve()
-    except Exception:
+    except Exception as exc:
+        print_error(f"fetch_thumbnail_cached video_id={video_id}", exc)
         return None

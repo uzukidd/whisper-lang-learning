@@ -36,6 +36,9 @@ def run(
     initial = _resolve_initial_arg(argv)
 
     def main(page) -> None:
+        from interface.flet_player.ui.app_lifecycle import install_force_exit_on_window_close
+
+        install_force_exit_on_window_close(page)
         page_builder(page, initial_video_uri=initial)
 
     runner = app_runner or flet_module.run

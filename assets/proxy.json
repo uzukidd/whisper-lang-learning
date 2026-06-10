@@ -1,5 +1,5 @@
 {
   "enabled": true,
   "proxy_url": "http://127.0.0.1:7890",
-  "cookies_from_browser": "chrome"
+  "cookies_from_browser": ""
 }

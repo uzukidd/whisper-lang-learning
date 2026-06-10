@@ -4,14 +4,61 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..domain.youtube_models import YouTubeVideoDetail, YouTubeVideoSummary, normalize_watch_url
-from .proxy_settings import ProxySettings, load_proxy_settings, yt_dlp_network_args, yt_dlp_proxy_args
-from .yt_dlp_common import yt_dlp_command
+DownloadProgressCallback = Callable[[float, str], None]
+
+from ..domain.youtube_models import (
+    YouTubeVideoDetail,
+    YouTubeVideoSummary,
+    extract_video_id_from_url,
+    normalize_watch_url,
+)
+from .error_log import print_error
+from .proxy_settings import (
+    ProxySettings,
+    load_proxy_settings,
+    sync_yt_dlp_cookies_work_file,
+    yt_dlp_network_args,
+    yt_dlp_proxy_args,
+)
+from .yt_dlp_common import (
+    iter_yt_dlp_output_lines,
+    parse_yt_dlp_download_fraction,
+    summarize_yt_dlp_output,
+    yt_dlp_command,
+)
 
 _DEFAULT_TIMEOUT = 120
+_YTDLP_SINGLE_VIDEO_META_ARGS = [
+    "--no-playlist",
+    "--skip-download",
+    "--no-warnings",
+    "--ignore-no-formats-error",
+]
+_YTDLP_PRACTICE_FORMAT = (
+    "worst[ext=mp4]/worstvideo[ext=mp4]+worstaudio[ext=m4a]/"
+    "worstvideo+worstaudio/worst/best"
+)
+
+
+def _should_retry_without_cookies(error_text: str) -> bool:
+    """Retry without cookies only when the cookie file itself failed, not on bot checks."""
+    lower = error_text.lower()
+    if "sign in to confirm" in lower or "not a bot" in lower:
+        return False
+    if "use --cookies" in lower or "pass cookies" in lower:
+        return False
+    cookie_failure_markers = (
+        "failed to load cookies",
+        "invalid cookie",
+        "could not copy",
+        "failed to decrypt",
+        "no cookies could be",
+    )
+    return any(marker in lower for marker in cookie_failure_markers)
 
 
 def _settings(proxy_url: str | None, settings: ProxySettings | None) -> ProxySettings:
@@ -34,10 +81,7 @@ def _network_args(
     use_cookies: bool = True,
 ) -> list[str]:
     resolved = _settings(proxy_url, settings)
-    effective_proxy = proxy_url if proxy_url is not None else resolved.effective_proxy_url()
-    if not use_cookies:
-        return yt_dlp_proxy_args(effective_proxy)
-    return yt_dlp_network_args(resolved, proxy_url)
+    return yt_dlp_network_args(resolved, proxy_url, use_cookies=use_cookies)
 
 
 def _run_yt_dlp(
@@ -49,6 +93,8 @@ def _run_yt_dlp(
     use_cookies: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     resolved = _settings(proxy_url, settings)
+    if use_cookies:
+        sync_yt_dlp_cookies_work_file(resolved)
     try:
         proc = subprocess.run(
             [*yt_dlp_command(), *_network_args(proxy_url, settings, use_cookies=use_cookies), *args],
@@ -60,12 +106,17 @@ def _run_yt_dlp(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
+        print_error("_run_yt_dlp timeout", exc)
         raise RuntimeError(f"yt-dlp timed out after {timeout}s") from exc
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "").strip() or "yt-dlp failed"
+        print_error("_run_yt_dlp", msg)
+    combined = (proc.stderr or "") + (proc.stdout or "")
     if (
         proc.returncode != 0
         and use_cookies
-        and resolved.effective_cookies_browser()
-        and "cookie" in ((proc.stderr or "") + (proc.stdout or "")).lower()
+        and resolved.uses_yt_dlp_cookies()
+        and _should_retry_without_cookies(combined)
     ):
         return _run_yt_dlp(
             args,
@@ -74,8 +125,100 @@ def _run_yt_dlp(
             timeout=timeout,
             use_cookies=False,
         )
-    print(proc.stdout)
     return proc
+
+
+def _emit_download_progress(
+    on_progress: DownloadProgressCallback | None,
+    fraction: float,
+    message: str,
+) -> None:
+    if on_progress is not None:
+        on_progress(max(0.0, min(1.0, fraction)), message)
+
+
+def _handle_yt_dlp_output_line(
+    line: str,
+    on_progress: DownloadProgressCallback | None,
+    output_lines: list[str],
+    *,
+    last_fraction: float,
+) -> float:
+    stripped = line.strip()
+    if not stripped:
+        return last_fraction
+    output_lines.append(line if line.endswith("\n") else f"{line}\n")
+    fraction = parse_yt_dlp_download_fraction(stripped, last_fraction=last_fraction)
+    if fraction is not None:
+        last_fraction = fraction
+        _emit_download_progress(on_progress, last_fraction, stripped)
+    elif "100%" in stripped or "Download completed" in stripped or "[Merger] Merging" in stripped:
+        _emit_download_progress(on_progress, 1.0, stripped)
+        last_fraction = 1.0
+    elif on_progress is not None and (stripped.startswith("[youtube]") or stripped.startswith("[info]")):
+        _emit_download_progress(on_progress, last_fraction, stripped)
+    return last_fraction
+
+
+def _run_yt_dlp_download(
+    args: list[str],
+    proxy_url: str | None = None,
+    settings: ProxySettings | None = None,
+    timeout: int = 600,
+    *,
+    on_progress: DownloadProgressCallback | None = None,
+) -> None:
+    resolved = _settings(proxy_url, settings)
+    last_error = "yt-dlp download failed"
+    for use_cookies in (True, False):
+        if use_cookies:
+            sync_yt_dlp_cookies_work_file(resolved)
+        cmd = [
+            *yt_dlp_command(),
+            *_network_args(proxy_url, settings, use_cookies=use_cookies),
+            "--newline",
+            "--no-warnings",
+            *args,
+        ]
+        output_lines: list[str] = []
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        try:
+            last_fraction = 0.0
+            if proc.stdout is not None:
+                for line in iter_yt_dlp_output_lines(proc.stdout):
+                    last_fraction = _handle_yt_dlp_output_line(
+                        line,
+                        on_progress,
+                        output_lines,
+                        last_fraction=last_fraction,
+                    )
+            return_code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            print_error("_run_yt_dlp_download timeout", exc)
+            raise RuntimeError(f"yt-dlp timed out after {timeout}s") from exc
+
+        if return_code == 0:
+            _emit_download_progress(on_progress, 1.0, "Download completed")
+            return
+
+        combined = "".join(output_lines)
+        last_error = combined.strip() or "yt-dlp download failed"
+        if (
+            use_cookies
+            and resolved.uses_yt_dlp_cookies()
+            and _should_retry_without_cookies(combined)
+        ):
+            continue
+        break
+    raise RuntimeError(summarize_yt_dlp_output(last_error))
 
 
 def _parse_yt_dlp_json(raw: str) -> Any:
@@ -90,6 +233,7 @@ def _parse_yt_dlp_json(raw: str) -> Any:
                 return json.loads(candidate)
             except json.JSONDecodeError:
                 continue
+        print_error("_parse_yt_dlp_json", "yt-dlp returned invalid JSON")
         raise RuntimeError("yt-dlp returned invalid JSON")
 
 
@@ -104,12 +248,15 @@ def _run_yt_dlp_json(
     if raw:
         try:
             return _parse_yt_dlp_json(raw)
-        except RuntimeError:
+        except RuntimeError as exc:
+            print_error("_run_yt_dlp_json parse", exc)
             if proc.returncode == 0:
                 raise
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip() or "yt-dlp failed"
+        print_error("_run_yt_dlp_json", msg)
         raise RuntimeError(msg)
+    print_error("_run_yt_dlp_json", "yt-dlp returned empty output")
     raise RuntimeError("yt-dlp returned empty output")
 
 
@@ -120,9 +267,7 @@ def fetch_video_description(
 ) -> str:
     proc = _run_yt_dlp(
         [
-            "--no-playlist",
-            "--skip-download",
-            "--no-warnings",
+            *_YTDLP_SINGLE_VIDEO_META_ARGS,
             "--print",
             "description",
             video_url.strip(),
@@ -133,6 +278,7 @@ def fetch_video_description(
     )
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip() or "yt-dlp failed"
+        print_error("fetch_video_description", msg)
         raise RuntimeError(msg)
     return (proc.stdout or "").strip()
 
@@ -143,12 +289,13 @@ def fetch_video_detail(
     settings: ProxySettings | None = None,
 ) -> YouTubeVideoDetail:
     payload = _run_yt_dlp_json(
-        ["--dump-single-json", "--no-playlist", "--skip-download", "--no-warnings", video_url.strip()],
+        ["--dump-single-json", *_YTDLP_SINGLE_VIDEO_META_ARGS, video_url.strip()],
         proxy_url=proxy_url,
         settings=settings,
         timeout=60,
     )
     if not isinstance(payload, dict):
+        print_error("fetch_video_detail", "invalid video metadata from yt-dlp")
         raise RuntimeError("Invalid video metadata from yt-dlp")
     return YouTubeVideoDetail.from_yt_dlp_entry(payload)
 
@@ -300,39 +447,54 @@ def fetch_channel_videos_page(
     return _videos_from_playlist_payload(payload), _playlist_total(payload)
 
 
+def _resolve_download_video_id(video_url: str, video_id: str | None = None) -> str:
+    resolved = (video_id or "").strip() or extract_video_id_from_url(video_url)
+    if resolved:
+        return resolved
+    print_error("_resolve_download_video_id", f"could not resolve id from url={video_url!r}")
+    raise RuntimeError("Could not resolve YouTube video id for download")
+
+
 def download_video_for_practice(
     video_url: str,
     cache_dir: str | Path,
     proxy_url: str | None = None,
     settings: ProxySettings | None = None,
+    *,
+    video_id: str | None = None,
+    on_progress: DownloadProgressCallback | None = None,
 ) -> Path:
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    detail = fetch_video_detail(video_url, proxy_url=proxy_url, settings=settings)
-    for path in sorted(cache_dir.glob(f"{detail.id}.*")):
+    _emit_download_progress(on_progress, 0.0, "Checking cache...")
+    resolved_id = _resolve_download_video_id(video_url, video_id)
+    watch_url = normalize_watch_url(resolved_id, video_url)
+
+    for path in sorted(cache_dir.glob(f"{resolved_id}.*")):
         if path.is_file() and path.suffix.lower() not in {".part", ".ytdl"}:
+            _emit_download_progress(on_progress, 1.0, "Using cached file")
             return path.resolve()
 
-    output_template = str(cache_dir / f"{detail.id}.%(ext)s")
-    proc = _run_yt_dlp(
+    output_template = str(cache_dir / f"{resolved_id}.%(ext)s")
+    _emit_download_progress(on_progress, 0.0, "Downloading video...")
+    _run_yt_dlp_download(
         [
             "-f",
-            "worst[ext=mp4]/worst",
+            _YTDLP_PRACTICE_FORMAT,
             "--no-playlist",
             "-o",
             output_template,
-            normalize_watch_url(detail.id, video_url),
+            watch_url,
         ],
         proxy_url=proxy_url,
         settings=settings,
         timeout=600,
+        on_progress=on_progress,
     )
-    if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "").strip() or "yt-dlp download failed"
-        raise RuntimeError(msg)
 
-    for path in sorted(cache_dir.glob(f"{detail.id}.*")):
+    for path in sorted(cache_dir.glob(f"{resolved_id}.*")):
         if path.is_file() and path.suffix.lower() not in {".part", ".ytdl"}:
             return path.resolve()
-    raise RuntimeError(f"Download finished but file not found for video {detail.id}")
+    print_error("download_video_for_practice", f"file not found for video {resolved_id}")
+    raise RuntimeError(f"Download finished but file not found for video {resolved_id}")
